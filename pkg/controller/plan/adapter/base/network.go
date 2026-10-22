@@ -6,6 +6,7 @@ import (
 	"net"
 	"path"
 	"sort"
+	"strings"
 
 	api "github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1"
 	"github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1/ref"
@@ -114,6 +115,45 @@ func ResolveNICModes(nics []NICRef, pairsBySource map[string][]api.NetworkPair, 
 		modes[nic.MAC] = mode
 	}
 	return modes
+}
+
+// IsNICExcluded reports whether mac appears in the VM's static IP exclusion
+// list. MAC case and colon/hyphen separators do not affect identity.
+func IsNICExcluded(mac string, excludedMACs []string) bool {
+	if mac == "" {
+		return false
+	}
+	canonical := canonicalMAC(mac)
+	for _, excluded := range excludedMACs {
+		if excluded != "" && canonical == canonicalMAC(excluded) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalMAC(mac string) string {
+	return strings.ToLower(strings.NewReplacer(":", "", "-", "").Replace(mac))
+}
+
+// ApplyNICExclusions overlays a VM's excluded NICs on resolved NetworkMap
+// modes. An exclusion changes preserve (or an absent mode, which the vSphere
+// builder otherwise treats as preserve) to none; DHCP and none remain intact.
+// The input map is not modified.
+func ApplyNICExclusions(modes map[string]string, nics []NICRef, excludedMACs []string) map[string]string {
+	result := make(map[string]string, len(modes)+len(nics))
+	for mac, mode := range modes {
+		result[mac] = mode
+	}
+	for _, nic := range nics {
+		if !IsNICExcluded(nic.MAC, excludedMACs) {
+			continue
+		}
+		if mode, found := result[nic.MAC]; !found || mode == string(api.NetworkIPModePreserve) {
+			result[nic.MAC] = string(api.NetworkIPModeNone)
+		}
+	}
+	return result
 }
 
 func HasPreserveMode(modes map[string]string) bool {

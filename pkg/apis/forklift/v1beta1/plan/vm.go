@@ -220,6 +220,14 @@ type VM struct {
 	// vSphere only; other providers ignore this field.
 	// +optional
 	ExcludeDisks []string `json:"excludeDisks,omitempty"`
+	// ExcludeNICsFromStaticIPs lists MAC addresses of this vSphere VM's NICs whose
+	// static IP settings should not be passed to virt-v2v. An exclusion overrides
+	// a preserve mode, but does not change DHCP or none modes. Omitting the list
+	// keeps the plan-level and NetworkMap behavior. MACs may be 12 hex digits or
+	// colon- or hyphen-separated octets.
+	// +optional
+	// +kubebuilder:validation:items:Pattern=`^([0-9A-Fa-f]{12}|([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})$`
+	ExcludeNICsFromStaticIPs []string `json:"excludeNICsFromStaticIPs,omitempty"`
 }
 
 // Find a Hook for the specified step.

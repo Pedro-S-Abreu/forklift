@@ -574,6 +574,7 @@ func (r *Validator) UdnStaticIPs(vmRef ref.Ref, client client.Client) (ok bool, 
 		err = liberr.Wrap(err, "vm", vmRef)
 		return
 	}
+	planVM := r.getPlanVM(&vm.VM)
 
 	udnSubnet, err := r.getUdnSubnet(client)
 	if udnSubnet == "" {
@@ -584,6 +585,9 @@ func (r *Validator) UdnStaticIPs(vmRef ref.Ref, client client.Client) (ok bool, 
 		return false, liberr.Wrap(err, "vm", vmRef)
 	}
 	for _, guestNetwork := range vm.GuestNetworks {
+		if planVM != nil && planbase.IsNICExcluded(guestNetwork.MAC, planVM.ExcludeNICsFromStaticIPs) {
+			continue
+		}
 		if guestNetwork.Network == sourceNetwork.Name {
 			// Validate the NAD
 			_, ipNet, err := net.ParseCIDR(udnSubnet)
@@ -614,15 +618,30 @@ func (r *Validator) StaticIPs(vmRef ref.Ref) (ok bool, err error) {
 		err = liberr.Wrap(err, "vm", vmRef)
 		return
 	}
+	planVM := r.getPlanVM(&vm.VM)
+	var includedNICs []vsphere.NIC
+	for _, nic := range vm.NICs {
+		if planVM == nil || !planbase.IsNICExcluded(nic.MAC, planVM.ExcludeNICsFromStaticIPs) {
+			includedNICs = append(includedNICs, nic)
+		}
+	}
+	if len(vm.NICs) > 0 && len(includedNICs) == 0 {
+		return true, nil
+	}
 
-	if len(vm.NICs) > 0 && len(vm.GuestNetworks) == 0 {
+	if len(includedNICs) > 0 && len(vm.GuestNetworks) == 0 {
 		return false, nil
 	}
 
 	for _, guestNetwork := range vm.GuestNetworks {
+		if planVM != nil && planbase.IsNICExcluded(guestNetwork.MAC, planVM.ExcludeNICsFromStaticIPs) {
+			continue
+		}
 		found := false
-		for _, nic := range vm.NICs {
-			if nic.MAC == guestNetwork.MAC {
+		for _, nic := range includedNICs {
+			// Guest tools may format the same MAC with different case or separators.
+			if nic.MAC == guestNetwork.MAC ||
+				planbase.IsNICExcluded(guestNetwork.MAC, []string{nic.MAC}) {
 				found = true
 				break
 			}
@@ -649,14 +668,10 @@ func (r *Validator) ChangeTrackingEnabled(vmRef ref.Ref) (bool, error) {
 	return vm.ChangeTrackingEnabled, nil
 }
 
-// getPlanVM get the plan VM for the given vsphere VM by looping over plan.Spec.VMs
+// getPlanVM gets the planned VM by ID, falling back to name for older plans.
 func (r *Validator) getPlanVM(vm *model.VM) *plan.VM {
-	for i := range r.Plan.Spec.VMs {
-		if r.Plan.Spec.VMs[i].ID == vm.ID {
-			return &r.Plan.Spec.VMs[i]
-		}
-	}
-	return nil
+	planVM, _ := r.Plan.Spec.FindVM(ref.Ref{ID: vm.ID, Name: vm.Name})
+	return planVM
 }
 
 // Validate that VM has no pre-existing snapshots for warm migration

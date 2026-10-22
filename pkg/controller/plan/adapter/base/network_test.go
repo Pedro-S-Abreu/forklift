@@ -527,6 +527,66 @@ func TestResolveNICModes_1toN_MixedNetworks(t *testing.T) {
 	}
 }
 
+func TestIsNICExcluded(t *testing.T) {
+	mac := "AA:BB:CC:DD:EE:FF"
+	if !IsNICExcluded(mac, []string{"aa-bb-cc-dd-ee-ff"}) {
+		t.Error("MAC matching should ignore case and colon/hyphen separators")
+	}
+	if IsNICExcluded(mac, []string{"00:11:22:33:44:55"}) {
+		t.Error("a different MAC should not be excluded")
+	}
+	if IsNICExcluded("", []string{""}) {
+		t.Error("an empty MAC must not match an empty exclusion")
+	}
+}
+
+func TestApplyNICExclusions(t *testing.T) {
+	nics := []NICRef{
+		{MAC: "AA:BB:CC:DD:EE:01", NetworkID: "shared"},
+		{MAC: "AA:BB:CC:DD:EE:02", NetworkID: "shared"},
+		{MAC: "AA:BB:CC:DD:EE:03", NetworkID: "dhcp"},
+		{MAC: "AA:BB:CC:DD:EE:04", NetworkID: "none"},
+		{MAC: "AA:BB:CC:DD:EE:05", NetworkID: "unmapped"},
+	}
+	resolved := map[string]string{
+		nics[0].MAC: string(api.NetworkIPModePreserve),
+		nics[1].MAC: string(api.NetworkIPModePreserve),
+		nics[2].MAC: string(api.NetworkIPModeDHCP),
+		nics[3].MAC: string(api.NetworkIPModeNone),
+	}
+
+	unchanged := ApplyNICExclusions(resolved, nics, nil)
+	if len(unchanged) != len(resolved) || unchanged[nics[0].MAC] != string(api.NetworkIPModePreserve) {
+		t.Fatalf("omitted exclusions should preserve resolved modes, got %v", unchanged)
+	}
+	if _, found := unchanged[nics[4].MAC]; found {
+		t.Error("an unmapped NIC should stay absent without an exclusion")
+	}
+
+	excluded := ApplyNICExclusions(resolved, nics, []string{
+		"aa-bb-cc-dd-ee-01", // Overrides an explicit preserve mode.
+		"aa:bb:cc:dd:ee:03", // Does not override DHCP.
+		"aa:bb:cc:dd:ee:04", // Does not override none.
+		"aa:bb:cc:dd:ee:05", // Overrides the builder's absent-mode fallback.
+		"aa:bb:cc:dd:ee:99", // Does not introduce a mode for an unknown NIC.
+	})
+	if excluded[nics[0].MAC] != string(api.NetworkIPModeNone) || excluded[nics[4].MAC] != string(api.NetworkIPModeNone) {
+		t.Errorf("excluded preserve and unmapped NICs should resolve to none, got %v", excluded)
+	}
+	if excluded[nics[1].MAC] != string(api.NetworkIPModePreserve) {
+		t.Error("another NIC on the same source network should still preserve")
+	}
+	if excluded[nics[2].MAC] != string(api.NetworkIPModeDHCP) || excluded[nics[3].MAC] != string(api.NetworkIPModeNone) {
+		t.Error("explicit DHCP and none modes should remain unchanged")
+	}
+	if len(excluded) != len(resolved)+1 {
+		t.Errorf("only one absent NIC mode should have been added, got %v", excluded)
+	}
+	if resolved[nics[0].MAC] != string(api.NetworkIPModePreserve) {
+		t.Error("ApplyNICExclusions should not mutate the resolved mode map")
+	}
+}
+
 // --- HasPreserveMode ---
 
 func TestHasPreserveMode_True(t *testing.T) {

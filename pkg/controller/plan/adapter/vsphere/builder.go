@@ -225,12 +225,28 @@ func (r *Builder) PodEnvironment(vmRef ref.Ref, sourceSecret *core.Secret) (env 
 		err = liberr.Wrap(err)
 		return
 	}
-	modeByMAC := planbase.ResolveNICModes(nicRefs, pairsBySource, r.Plan.Spec.PreserveStaticIPs)
-	// Honor resolved preserve modes. Fall back to the plan-level flag only when
-	// matching produced no modes (empty map), so a dhcp/none override still wins.
-	// DHCP is also mapped on Linux so virt-v2v can write udev naming rules.
+	planVM := r.getPlanVM(vm)
+	resolvedModes := planbase.ResolveNICModes(nicRefs, pairsBySource, r.Plan.Spec.PreserveStaticIPs)
+	modeByMAC := resolvedModes
+	exclusionChangedMode := false
+	if planVM != nil && len(planVM.ExcludeNICsFromStaticIPs) > 0 {
+		modeByMAC = planbase.ApplyNICExclusions(modeByMAC, nicRefs, planVM.ExcludeNICsFromStaticIPs)
+		exclusionChangedMode = !maps.Equal(resolvedModes, modeByMAC)
+	}
+	// Honor resolved preserve modes. When no mode is resolved, retain the
+	// plan-level fallback. DHCP is also mapped on Linux for udev naming rules.
 	shouldPreserve := planbase.HasPreserveMode(modeByMAC) ||
 		(r.Plan.Spec.PreserveStaticIPs && len(modeByMAC) == 0)
+	// An excluded NIC may be the only entry in the mode map. Other unmatched
+	// NICs still inherit the plan-level setting, as mapMacStaticIps does.
+	if !shouldPreserve && r.Plan.Spec.PreserveStaticIPs && exclusionChangedMode {
+		for _, nic := range nicRefs {
+			if _, resolved := modeByMAC[nic.MAC]; !resolved {
+				shouldPreserve = true
+				break
+			}
+		}
+	}
 	if shouldPreserve || planbase.HasDHCPMode(modeByMAC) {
 		macsToIps, err = r.mapMacStaticIps(vm, modeByMAC)
 		if err != nil {
@@ -253,7 +269,7 @@ func (r *Builder) PodEnvironment(vmRef ref.Ref, sourceSecret *core.Secret) (env 
 	} else if isWindows(vm) {
 		var manualMACs []string
 		for _, gn := range vm.GuestNetworks {
-			if mode, ok := modeByMAC[gn.MAC]; ok && mode != string(api.NetworkIPModePreserve) {
+			if mode, ok := nicModeForMAC(modeByMAC, gn.MAC); ok && mode != string(api.NetworkIPModePreserve) {
 				continue
 			}
 			if gn.Origin == string(types.NetIpConfigInfoIpAddressOriginManual) {
@@ -274,7 +290,6 @@ func (r *Builder) PodEnvironment(vmRef ref.Ref, sourceSecret *core.Secret) (env 
 			Value: vm.HostName,
 		})
 	}
-	planVM := r.getPlanVM(vm)
 	if planVM != nil && planVM.NbdeClevis {
 		env = append(env, core.EnvVar{
 			Name:  "V2V_NBDE_CLEVIS",
@@ -527,13 +542,25 @@ func formatNetworkConfig(network vsphere.GuestNetwork, gateway string) string {
 	return strings.TrimSuffix(config, ",")
 }
 
+func nicModeForMAC(modeByMAC map[string]string, mac string) (string, bool) {
+	if mode, found := modeByMAC[mac]; found {
+		return mode, true
+	}
+	for nicMAC, mode := range modeByMAC {
+		if planbase.IsNICExcluded(mac, []string{nicMAC}) {
+			return mode, true
+		}
+	}
+	return "", false
+}
+
 func (r *Builder) mapMacStaticIps(vm *model.VM, modeByMAC map[string]string) (ipMap string, err error) {
 	isWin := isWindows(vm)
 	sortedNetworks := planbase.SortedIPv4First(vm.GuestNetworks, func(gn vsphere.GuestNetwork) string { return gn.IP })
 
 	var configurations []string
 	for _, guestNetwork := range sortedNetworks {
-		if mode, ok := modeByMAC[guestNetwork.MAC]; ok {
+		if mode, ok := nicModeForMAC(modeByMAC, guestNetwork.MAC); ok {
 			// For Windows: skip DHCP (works natively)
 			// For Linux: include DHCP (needed for udev rules)
 			if mode != string(api.NetworkIPModePreserve) && (mode != string(api.NetworkIPModeDHCP) || isWin) {
@@ -1075,6 +1102,7 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 	var kNetworks []cnv.Network
 	var kInterfaces []cnv.Interface
 	staticIpInterfaces := make(map[string][]string)
+	planVM := r.getPlanVM(vm)
 
 	numNetworks := 0
 	hasUDN := r.Plan.DestinationHasUdnNetwork(r.Destination)
@@ -1134,7 +1162,8 @@ func (r *Builder) mapNetworks(vm *model.VM, object *cnv.VirtualMachineSpec) (err
 				kInterface.Binding = &cnv.PluginBinding{
 					Name: planbase.UdnL2bridge,
 				}
-				if r.Plan.Spec.PreserveStaticIPs {
+				if r.Plan.Spec.PreserveStaticIPs &&
+					(planVM == nil || !planbase.IsNICExcluded(nic.MAC, planVM.ExcludeNICsFromStaticIPs)) {
 					ips := r.findInterfaceIps(vm, nic)
 					if len(ips) > 0 {
 						staticIpInterfaces[networkName] = ips

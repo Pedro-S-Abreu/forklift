@@ -2587,6 +2587,17 @@ spec:
                       items:
                         type: string
                       type: array
+                    excludeNICsFromStaticIPs:
+                      description: |-
+                        ExcludeNICsFromStaticIPs lists MAC addresses of this vSphere VM's NICs whose
+                        static IP settings should not be passed to virt-v2v. An exclusion overrides
+                        a preserve mode, but does not change DHCP or none modes. Omitting the list
+                        keeps the plan-level and NetworkMap behavior. MACs may be 12 hex digits or
+                        colon- or hyphen-separated octets.
+                      items:
+                        pattern: ^([0-9A-Fa-f]{12}|([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})$
+                        type: string
+                      type: array
                     hooks:
                       description: Enable hooks.
                       items:
@@ -3263,6 +3274,17 @@ spec:
                             Excluding every disk is rejected. Excluding the root/boot disk is allowed with a warning.
                             vSphere only; other providers ignore this field.
                           items:
+                            type: string
+                          type: array
+                        excludeNICsFromStaticIPs:
+                          description: |-
+                            ExcludeNICsFromStaticIPs lists MAC addresses of this vSphere VM's NICs whose
+                            static IP settings should not be passed to virt-v2v. An exclusion overrides
+                            a preserve mode, but does not change DHCP or none modes. Omitting the list
+                            keeps the plan-level and NetworkMap behavior. MACs may be 12 hex digits or
+                            colon- or hyphen-separated octets.
+                          items:
+                            pattern: ^([0-9A-Fa-f]{12}|([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})$
                             type: string
                           type: array
                         firmware:
